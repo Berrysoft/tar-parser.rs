@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  merge_group:
+  pull_request:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flags: ""
+          - flags: --release
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install latest rust
+      run: rustup toolchain install stable --no-self-update --profile minimal
+    - name: Create Cargo.lock
+      run: cargo update
+
+    - uses: Swatinem/rust-cache@v2
+      env:
+        RUSTFLAGS: ${{ steps.retrieve-rustflags.outputs.RUSTFLAGS }}
+
+    - name: Test
+      run: cargo test ${{ matrix.flags }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install latest rust
+      run: rustup toolchain install stable --no-self-update --profile minimal --component rustfmt,clippy
+    - name: Ignore dev-dependencies
+      run: |
+        sed 's/\[dev-dependencies\]/[workaround-avoid-dev-deps]/g' Cargo.toml >Cargo.toml.tmp
+        mv Cargo.toml.tmp Cargo.toml
+    - name: Create Cargo.lock
+      run: cargo update
+
+    - uses: Swatinem/rust-cache@v2
+      env:
+        RUSTFLAGS: ${{ steps.retrieve-rustflags.outputs.RUSTFLAGS }}
+
+    - name: lint
+      run: |
+        cargo clippy --no-deps -- -D clippy::all
+        cargo doc --no-deps
+        cargo fmt --all -- --check
+
+  # Dummy job to have a stable name for the "all tests pass" requirement
+  tests-pass:
+    name: Tests pass
+    needs:
+    - test
+    - lint
+    if: always() # always run even if dependencies fail
+    runs-on: ubuntu-latest
+    steps:
+    # fail if ANY dependency has failed or been skipped or cancelled
+    - if: "contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')"
+      run: exit 1
+    - run: exit 0
